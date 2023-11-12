@@ -1,7 +1,7 @@
 // https://www.sohamkamani.com/golang/rsa-encryption/
 // https://gist.github.com/sohamkamani/08377222d5e3e6bc130827f83b0c073e
 
-package main
+package crypto
 
 import (
 	"crypto"
