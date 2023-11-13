@@ -1,7 +1,6 @@
 package main
 
 import (
-	"crypto/rsa"
 	"fmt"
 	"net"
 
@@ -10,7 +9,45 @@ import (
 	"KI5/tugas1/signNverify"
 )
 
+func GeneratePrivateKey(filename string){
+	bitSize := 4096
+
+	privKey := signNverify.GenerateKeys(bitSize) 
+	
+	err := signNverify.SaveRsaPrivateKey(privKey, filename) 
+	if err != nil {
+		fmt.Println("Error saving private key:", err)
+	}
+}
+
+func send(conn net.Conn, buffer []byte) (int){
+	_, err := conn.Write(buffer)
+	if err != nil {
+		fmt.Println("Error sending:", err)
+		return 0
+	}
+
+	fmt.Printf("\n\nClient: %s\n", buffer)
+	return len(buffer)
+}
+
+func read(conn net.Conn) ([]byte, int){
+	buffer := make([]byte, 4096)
+	n, err := conn.Read(buffer)
+	if err != nil {
+		fmt.Println("Error reading:", err)
+		return nil, 0
+	}
+
+	fmt.Printf("\n\nServer: %s\n", buffer)
+	return buffer, n
+}
+
 func main() {
+	filename := "client_private.key"
+	GeneratePrivateKey(filename)
+	privateKey := signNverify.GetKeys(filename)
+
 	conn, err := net.Dial("tcp", "localhost:8080")
 	if err != nil {
 		fmt.Println("Error connecting:", err)
@@ -18,83 +55,43 @@ func main() {
 	}
 	defer conn.Close()
 
-	privateKey, err := GenerateKeys()
-	if err != nil{
-		fmt.Println("Error generating private key:", err)
-	}
+	
 
-	err = SaveKeys(privateKey, "client_private.key") 
+	//1. Get Server PUB KEY
+	buffer, n := read(conn)
+
+	_, serverKey := signNverify.RsaFromString(string(buffer[:n]))
 	if err != nil {
-		fmt.Println("Error writing private key to file:", err)
+		fmt.Println("Error converting string to rsa:", err)
+		return
 	}
 
-	_, err = GetKeys("client_private.key") 
-	if err != nil {
-		fmt.Println("Error reading private key to file:", err)
-	}
-	// //take command
-	// reader := bufio.NewReader(os.Stdin)
+	//1. SEND CONFIRM
+	message := []byte("confirm")
+	send(conn, message)
+	
+	//1. (BONUS) SEND Client PUB KEY
+	message = signNverify.RsaToByte(&privateKey.PublicKey)
+	encryptedBytes := signNverify.EncryptMessage(serverKey, message)
+	send(conn, encryptedBytes)
+	
+	//1. GET CONFIRM
+	read(conn)
+	
+	//1. GET Pub Session Key
+	encryptedBytes, n = read(conn)
+	decryptedBytes := signNverify.DecryptMessage(privateKey, encryptedBytes[:n])
+	_, sessionKey := signNverify.RsaFromString(string(decryptedBytes))
+	fmt.Printf("\n\nClient Key Decrypted message: %s\n", signNverify.RsaToByte(sessionKey))
 
-	// fmt.Print("Enter a message: ")
-	// command, err := reader.ReadString('\n')
-	// if err != nil {
-	// 	fmt.Println("Error reading input:", err)
-	// 	return
-	// }
+	// //1. SEND CONFIRM
+	message = []byte("confirm")
+	send(conn, message)
 
-	// Send a message to the server
-	// message := command
-	// _, err = conn.Write([]byte(message))
-	// if err != nil {
-	// 	fmt.Println("Error sending:", err)
-	// 	return
-	// }
+	//1. SEND MESSAGE
+	message = signNverify.EncryptMessage(sessionKey, []byte("This is my secret"))
+	send(conn, message)
 
-	// // Read the response from the server
-	// buffer := make([]byte, 1024)
-	// n, err := conn.Read(buffer)
-	// if err != nil {
-	// 	fmt.Println("Error reading:", err)
-	// 	return
-	// }
-
-	// fmt.Printf("Response from server: %s\n", buffer[:n])
-}
-
-func GenerateKeys() (*rsa.PrivateKey, error){
-	privateKey, err := signNverify.GenerateRSAKey()
-	if err != nil { return nil, err }
-
-	privateKeyString := signNverify.RsaToString(privateKey)
-	fmt.Println("Private Key String:")
-	fmt.Println(privateKeyString)
-
-	publicKeyString := signNverify.RsaToString(&privateKey.PublicKey)
-	fmt.Println("Public Key String:")
-	fmt.Println(publicKeyString)
-
-	return privateKey, nil
-}
-
-func SaveKeys(privateKey *rsa.PrivateKey, filename string) error{
-	err := signNverify.WritePrivateKeyToFile(privateKey, filename)
-	if err != nil { return err }
-
-	fmt.Printf("Success saving key file to: %s\n", filename)
-	return nil
-}
-
-func GetKeys(filename string) (*rsa.PrivateKey, error){
-	privateKey, err := signNverify.ReadPrivateKeyFromFile(filename)
-	if err != nil { return nil, err }
-
-	privateKeyString := signNverify.RsaToString(privateKey)
-	fmt.Println("Private Key String:")
-	fmt.Println(privateKeyString)
-
-	publicKeyString := signNverify.RsaToString(&privateKey.PublicKey)
-	fmt.Println("Public Key String:")
-	fmt.Println(publicKeyString)
-
-	return privateKey, err
+	//1. GET CONFIRM
+	read(conn)
 }
