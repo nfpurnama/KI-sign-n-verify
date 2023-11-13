@@ -7,7 +7,7 @@ import (
 	// "crypto"
 	"crypto/rand"
 	"crypto/rsa"
-	// "crypto/sha512"
+	"crypto/sha256"
 	"crypto/x509"
 	"encoding/pem"
 	"fmt"
@@ -32,15 +32,7 @@ import (
 // 	// fokus di sign saja
 // 	if false {
 
-// 		encryptedBytes, err := rsa.EncryptOAEP(
-// 			sha512.New(),
-// 			rand.Reader,
-// 			&publicKey,
-// 			[]byte("super secret message"),
-// 			nil)
-// 		if err != nil {
-// 			log.Fatalln(err)
-// 		}
+
 
 // 		fmt.Println("encrypted bytes: ", encryptedBytes)
 
@@ -48,10 +40,7 @@ import (
 // 		// we can set this value as nil
 // 		// The OEAPOptions in the end signify that we encrypted the data using OEAP, and that we used
 // 		// SHA256 to hash the input.
-// 		decryptedBytes, err := privateKey.Decrypt(nil, encryptedBytes, &rsa.OAEPOptions{Hash: crypto.SHA512})
-// 		if err != nil {
-// 			log.Fatalln(err)
-// 		}
+
 
 // 		// We get back the original information in the form of bytes, which we
 // 		// the cast to a string and print
@@ -91,9 +80,7 @@ import (
 // 	fmt.Println("signature verified")
 // }
 
-func GenerateRSAKey() (*rsa.PrivateKey, error) {
-	bitSize := 1024 // You can modify this to change the key size
-
+func GenerateRSAKey(bitSize int) (*rsa.PrivateKey, error) {
 	privateKey, err := rsa.GenerateKey(rand.Reader, bitSize)
 	if err != nil {
 		return nil, err
@@ -101,19 +88,40 @@ func GenerateRSAKey() (*rsa.PrivateKey, error) {
 	return privateKey, nil
 }
 
-func WritePrivateKeyToFile(privateKey *rsa.PrivateKey, filename string) error {
-	file, err := os.Create(filename)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-
-	privateKeyPEM := &pem.Block{
+func WriteRsaPrivateKeyToFile(privateKey *rsa.PrivateKey, filename string) error {
+	
+	privateKeyBlock := &pem.Block{
 		Type:  "RSA PRIVATE KEY",
 		Bytes: x509.MarshalPKCS1PrivateKey(privateKey),
 	}
+	
+	privateKeyfile, err := os.Create(filename)
+	if err != nil {
+		return err
+	}
+	defer privateKeyfile.Close()
+	
+	err = pem.Encode(privateKeyfile, privateKeyBlock)
+	if err != nil {
+		return err
+	}
 
-	err = pem.Encode(file, privateKeyPEM)
+	return nil
+}
+
+func writeRsaPublicKeyToFile(publicKey *rsa.PublicKey, filename string) error {
+	pubKeyBlock := &pem.Block{
+		Type:  "RSA PUBLIC KEY",
+		Bytes: x509.MarshalPKCS1PublicKey(publicKey),
+	}
+
+	pubKeyFile, err := os.Create(filename)
+	if err != nil {
+		return err
+	}
+	defer pubKeyFile.Close()
+
+	err = pem.Encode(pubKeyFile, pubKeyBlock)
 	if err != nil {
 		return err
 	}
@@ -137,13 +145,6 @@ func ReadPrivateKeyFromFile(filename string) (*rsa.PrivateKey, error) {
 		return nil, err
 	}
 
-	// // Type assertion to access the RSA private key
-    // rsaPrivateKey, ok := privateKey.(*rsa.PrivateKey)
-    // if !ok {
-    //     fmt.Println("Not an RSA private key")
-    //     return nil, errors.New("fail to convert x509PrivateKey type to rsaPrivateKey")
-    // }
-
 	return privateKey, nil
 }
 
@@ -157,7 +158,7 @@ func RsaToString(key interface{}) string {
 		keyBytes = x509.MarshalPKCS1PrivateKey(k)
 	case *rsa.PublicKey:
 		keyType = "PUBLIC KEY"
-		keyBytes, _ = x509.MarshalPKIXPublicKey(k)
+		keyBytes = x509.MarshalPKCS1PublicKey(k)
 	default:
 		return ""
 	}
@@ -168,4 +169,120 @@ func RsaToString(key interface{}) string {
 	}
 
 	return string(pem.EncodeToMemory(block))
+}
+
+func RsaToByte(key interface{}) []byte {
+	return []byte(RsaToString(key))
+}
+
+func RsaFromString(keyString string) (*rsa.PrivateKey, *rsa.PublicKey) {
+	block, _ := pem.Decode([]byte(keyString))
+	if block == nil {
+		fmt.Println("failed to decode PEM block")
+		return nil, nil 
+	}
+
+	if block.Type == "RSA PRIVATE KEY" {
+		privKey, err := x509.ParsePKCS1PrivateKey(block.Bytes)
+		if err != nil {
+			return nil, nil
+		}
+		return privKey, &privKey.PublicKey
+	} else if block.Type == "PUBLIC KEY" {
+		pubKey, err := x509.ParsePKCS1PublicKey(block.Bytes)
+		if err != nil {
+			fmt.Println("failed to decode PEM block")
+			return nil, nil
+		}
+		return nil, pubKey
+	}
+
+	fmt.Println("unknown key type")
+	return nil, nil
+}
+
+func GenerateKeys(bitSize int) (*rsa.PrivateKey){
+	privateKey, err := GenerateRSAKey(bitSize)
+	if err != nil { 
+		fmt.Println("Error generating keys: ", err)
+		return nil 
+	}
+
+	privateKeyString := RsaToString(privateKey)
+	fmt.Println("Private Key String:")
+	fmt.Println(privateKeyString)
+
+	publicKeyString := RsaToString(&privateKey.PublicKey)
+	fmt.Println("Public Key String:")
+	fmt.Println(publicKeyString)
+
+	return privateKey
+}
+
+func SaveRsaPrivateKey(privateKey *rsa.PrivateKey, filename string) error{
+	err := WriteRsaPrivateKeyToFile(privateKey, filename)
+	if err != nil { return err }
+
+	fmt.Printf("Success saving private key file to: %s\n", filename)
+	return nil
+}
+
+func SaveRsaPublicKey(publicKey *rsa.PublicKey, filename string) error{
+	err := writeRsaPublicKeyToFile(publicKey, filename)
+	if err != nil { return err }
+
+	fmt.Printf("Success saving public key file to: %s\n", filename)
+	return nil
+}
+
+func GetKeys(filename string) (*rsa.PrivateKey){
+	privateKey, err := ReadPrivateKeyFromFile(filename)
+	if err != nil { 
+		fmt.Println("Error reading file: ", err)
+		return nil 
+	}
+
+	privateKeyString := RsaToString(privateKey)
+	fmt.Println("Private Key String:")
+	fmt.Println(privateKeyString)
+
+	publicKeyString := RsaToString(&privateKey.PublicKey)
+	fmt.Println("Public Key String:")
+	fmt.Println(publicKeyString)
+
+	return privateKey
+}
+
+func EncryptMessage(publicKey *rsa.PublicKey, message []byte) ([]byte){
+	fmt.Println("Key Len:", publicKey.Size()) 
+	fmt.Printf("Message Len: %s, LENGTH %d\n", message, len(message) + 64 + 2) 
+	
+	encryptedBytes, err := rsa.EncryptOAEP(
+		sha256.New(),
+		rand.Reader,
+		publicKey,
+		message,
+		nil)
+	if err != nil {
+		fmt.Println("Error encrypting:", err) 
+	}
+
+	return encryptedBytes
+}
+
+func DecryptMessage(privateKey *rsa.PrivateKey, encryptedBytes []byte) ([]byte){
+	fmt.Println("Key Len:", privateKey.Size()) 
+	fmt.Println("ENCRYPTED Len:", len(encryptedBytes)) 
+	
+	decryptedBytes, err := rsa.DecryptOAEP(
+		sha256.New(), 
+		nil, 
+		privateKey, 
+		encryptedBytes, 
+		nil)
+	if err != nil {
+		fmt.Println("Error decrypting:", err) 
+	}
+
+	return decryptedBytes
 }
