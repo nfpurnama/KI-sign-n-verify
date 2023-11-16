@@ -1,97 +1,129 @@
+// client.go
 package main
 
 import (
+	"crypto"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/sha256"
+	"crypto/x509"
+	"encoding/pem"
 	"fmt"
 	"net"
-
-	// "bufio"
-	// "os"
-	"KI5/tugas1/signNverify"
+	"io/ioutil"
+	"os"
 )
 
-func GeneratePrivateKey(filename string){
-	bitSize := 4096
+func generateSessionKey(length int) ([]byte, error) {
+	key := make([]byte, length)
+	_, err := rand.Read(key)
+	if err != nil {
+		return nil, err
+	}
+	return key, nil
+}
 
-	privKey := signNverify.GenerateKeys(bitSize) 
+func readRSAPublicKeyFromFile(filename string) (*rsa.PublicKey, error) {
+	// Read the PEM-encoded public key from the file
+	pemBytes, err := ioutil.ReadFile(filename)
+	if err != nil {
+		return nil, err
+	}
+
+	// Decode the PEM block
+	block, _ := pem.Decode(pemBytes)
+	if block == nil {
+		return nil, fmt.Errorf("failed to decode PEM block containing public key")
+	}
+
+	// Parse the X.509 certificate to get the public key
+	cert, err := x509.ParsePKIXPublicKey(block.Bytes)
+	if err != nil {
+		return nil, err
+	}
+
+	// Extract the RSA public key from the certificate
+	rsaPublicKey, ok := cert.(*rsa.PublicKey)
+	if !ok {
+		return nil, fmt.Errorf("public key is not an RSA key")
+	}
+
+	return rsaPublicKey, nil
+}
+
+
+func VerifySignature(data, signature []byte, publicKey *rsa.PublicKey) error {
+	hashed := sha256.Sum256(data)
+	return rsa.VerifyPSS(publicKey, crypto.SHA256, hashed[:], signature, nil)
+}
+
+func write(conn net.Conn, msg []byte, pubKey *rsa.PublicKey){
 	
-	err := signNverify.SaveRsaPrivateKey(privKey, filename) 
-	if err != nil {
-		fmt.Println("Error saving private key:", err)
+	if (pubKey != nil) {
+		// Encrypt the session key with the server's public key
+		encryptedMsg, err := rsa.EncryptOAEP(sha256.New(), rand.Reader, pubKey, msg, nil)
+		if err != nil {
+			fmt.Println("Error encrypting session key:", err)
+			return
+		}
+		_, err = conn.Write(encryptedMsg)
+		if err != nil {
+			fmt.Println("Error sending encrypted session key to the server:", err)
+			return
+		}
+
+	}else{
+		_, err := conn.Write(msg)
+		if err != nil {
+			fmt.Println("Error sending encrypted session key to the server:", err)
+			return
+		}
 	}
-}
-
-func send(conn net.Conn, buffer []byte) (int){
-	_, err := conn.Write(buffer)
-	if err != nil {
-		fmt.Println("Error sending:", err)
-		return 0
-	}
-
-	fmt.Printf("\n\nClient: %s\n", buffer)
-	return len(buffer)
-}
-
-func read(conn net.Conn) ([]byte, int){
-	buffer := make([]byte, 4096)
-	n, err := conn.Read(buffer)
-	if err != nil {
-		fmt.Println("Error reading:", err)
-		return nil, 0
-	}
-
-	fmt.Printf("\n\nServer: %s\n", buffer)
-	return buffer, n
 }
 
 func main() {
-	filename := "client_private.key"
-	GeneratePrivateKey(filename)
-	privateKey := signNverify.GetKeys(filename)
-
-	conn, err := net.Dial("tcp", "localhost:8080")
+	clientConn, err := net.Dial("tcp", "localhost:8080")
 	if err != nil {
-		fmt.Println("Error connecting:", err)
+		fmt.Println("Error connecting to server:", err)
 		return
 	}
-	defer conn.Close()
+	defer clientConn.Close()
 
-	
+	// Specify the desired length of the session key (in bytes)
+	sessionKeyLength := 32 // Adjust the length as needed
 
-	//1. Get Server PUB KEY
-	buffer, n := read(conn)
-
-	_, serverKey := signNverify.RsaFromString(string(buffer[:n]))
+	// Generate a session key
+	sessionKey, err := generateSessionKey(sessionKeyLength)
 	if err != nil {
-		fmt.Println("Error converting string to rsa:", err)
+		fmt.Println("Error generating session key:", err)
 		return
 	}
 
-	//1. SEND CONFIRM
-	message := []byte("confirm")
-	send(conn, message)
-	
-	//1. (BONUS) SEND Client PUB KEY
-	message = signNverify.RsaToByte(&privateKey.PublicKey)
-	encryptedBytes := signNverify.EncryptMessage(serverKey, message)
-	send(conn, encryptedBytes)
-	
-	//1. GET CONFIRM
-	read(conn)
-	
-	//1. GET Pub Session Key
-	encryptedBytes, n = read(conn)
-	decryptedBytes := signNverify.DecryptMessage(privateKey, encryptedBytes[:n])
-	_, sessionKey := signNverify.RsaFromString(string(decryptedBytes))
-	fmt.Printf("\n\nClient Key Decrypted message: %s\n", signNverify.RsaToByte(sessionKey))
+	fmt.Printf("Generated session key: %x\n", sessionKey)
 
-	// //1. SEND CONFIRM
-	message = []byte("confirm")
-	send(conn, message)
 
-	//1. SEND MESSAGE
-	message = signNverify.EncryptMessage(sessionKey, []byte("This is my secret"))
-	send(conn, message)
+	//open server pubkey
+	// Specify the filename containing the PEM-encoded PKIX public key
+	filename := "server_public.pem"
 
-	//1. GET CONFIRM
-	read(conn)
+	// Read and parse the RSA public key from the file
+	rsaPublicKey, err := readRSAPublicKeyFromFile(filename)
+	if err != nil {
+		fmt.Println("Error reading RSA public key from file:", err)
+		os.Exit(1)
+	}
+
+
+	// Client receives data and signature from the server
+	data := sessionKey
+	write(clientConn, data, rsaPublicKey)
+
+	// // Verify the signature using the server's public key
+	// err = VerifySignature(data, signatureBytes, serverPublicKey)
+	// if err != nil {
+	// 	fmt.Println("Error verifying signature:", err)
+	// 	return
+	// }
+
+	// fmt.Println("Successfully received data and verified RSA-PSS signature.")
 }
