@@ -1,108 +1,91 @@
+// server.go
 package main
 
 import (
-	"KI5/tugas1/signNverify"
-	// "crypto/des"
+	"crypto"
+	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha256"
+	"crypto/x509"
+	"encoding/pem"
 	"fmt"
 	"net"
+	"io/ioutil"
 )
 
-func send(conn net.Conn, buffer []byte) (int){
-	_, err := conn.Write(buffer)
+func SignData(data []byte, privateKey *rsa.PrivateKey) ([]byte, error) {
+	hashed := sha256.Sum256(data)
+	signature, err := rsa.SignPSS(rand.Reader, privateKey, crypto.SHA256, hashed[:], nil)
 	if err != nil {
-		fmt.Println("Error sending:", err)
-		return 0
+		return nil, err
 	}
-
-	fmt.Printf("\n\nServer: %s\n", buffer)
-	return len(buffer)
+	return signature, nil
 }
 
-func read(conn net.Conn) ([]byte, int){
-	buffer := make([]byte, 4096)
-	n, err := conn.Read(buffer)
+func readRSAPrivateKeyFromFile(filename string) (*rsa.PrivateKey, error) {
+	// Read the PEM-encoded private key from the file
+	pemBytes, err := ioutil.ReadFile(filename)
 	if err != nil {
-		fmt.Println("Error reading:", err)
-		return nil, 0
+		return nil, err
 	}
-	
-	fmt.Printf("\n\nClient: %s\n", buffer)
-	return buffer, n
-}
 
-func GeneratePrivateKey(filename string){
-	bitSize := 9182
+	// Decode the PEM block
+	block, _ := pem.Decode(pemBytes)
+	if block == nil {
+		return nil, fmt.Errorf("failed to decode PEM block containing private key")
+	}
 
-	privKey := signNverify.GenerateKeys(bitSize) 
-	
-	err := signNverify.SaveRsaPrivateKey(privKey, filename) 
+	// Parse the RSA private key
+	privateKey, err := x509.ParsePKCS1PrivateKey(block.Bytes)
 	if err != nil {
-		fmt.Println("Error saving private key:", err)
+		return nil, err
 	}
-}
 
-func handleClient(conn net.Conn, privateKey *rsa.PrivateKey) {
-	defer conn.Close()
-	
-	//1. SEND Server PUB KEY
-	message := signNverify.RsaToByte(&privateKey.PublicKey)
-	send(conn, message)
-
-	//1. GET CONFIRM
-	read(conn)
-	
-	//1. (BONUS) GET Encrypted Client PUB KEY
-	encryptedBytes, n := read(conn)
-	decryptedBytes := signNverify.DecryptMessage(privateKey, encryptedBytes[:n])
-	_, clientKey := signNverify.RsaFromString(string(decryptedBytes))
-	fmt.Printf("\n\nClient Key Decrypted message: %s\n", signNverify.RsaToByte(clientKey))
-
-	//1. SEND CONFIRM
-	message = []byte("confirm")
-	send(conn, message)
-
-	//1. SEND Pub Session Key
-	sessionKey := signNverify.GenerateKeys(2048)
-	message = signNverify.RsaToByte(&sessionKey.PublicKey)
-	encryptedBytes = signNverify.EncryptMessage(clientKey, message)
-	send(conn, encryptedBytes)
-
-	//1. GET CONFIRM
-	read(conn)
-
-	//1. GET MESSAGE
-	encryptedBytes, n = read(conn)
-	decryptedBytes = signNverify.DecryptMessage(sessionKey, encryptedBytes[:n])
-	fmt.Println("DECRYPTED MESSAGE: ", string(decryptedBytes))
-
-	//1. SEND CONFIRM
-	message = []byte("confirm")
-	send(conn, message)
+	return privateKey, nil
 }
 
 func main() {
-	filename := "server_private.key"
-	// GeneratePrivateKey(filename)
-
-	privateKey := signNverify.GetKeys(filename) 
-
-	listener, err := net.Listen("tcp", ":8080")
-	if err != nil {
-		fmt.Println("Error listening:", err)
-		return
-	}
-	defer listener.Close()
-
-	fmt.Println("Server is listening on port 8080")
-
-	for {
-		conn, err := listener.Accept()
+	go func() {
+		listener, err := net.Listen("tcp", ":8080")
 		if err != nil {
-			fmt.Println("Error accepting connection:", err)
+			fmt.Println("Error starting server:", err)
 			return
 		}
+		defer listener.Close()
 
-		go handleClient(conn, privateKey)
-	}
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				fmt.Println("Error accepting connection:", err)
+				return
+			}
+			defer conn.Close()
+
+			// Send public key to the client
+			encryptedSessionKey := make([]byte, 256) // Adjust the buffer size accordingly
+			_, err = conn.Read(encryptedSessionKey)
+			if err != nil {
+				fmt.Println("Error receiving encrypted session key from the client:", err)
+				return
+			}
+
+			filename := "server_private.pem"
+			privateKey, err := readRSAPrivateKeyFromFile(filename)
+			if err != nil {
+				fmt.Println("Error reading private key:", err)
+				return
+			}
+
+			sessionKey, err := privateKey.Decrypt(nil, encryptedSessionKey, &rsa.OAEPOptions{Hash: crypto.SHA256})
+			if err != nil {
+				fmt.Println("Error decrypting session key:", err)
+				return
+			}
+
+			fmt.Println(sessionKey)
+		}
+	}()
+
+	fmt.Println("Server started. Waiting for connections...")
+	select {}
 }
